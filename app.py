@@ -1,103 +1,72 @@
 from flask import Flask, request, jsonify
 import requests
-from bs4 import BeautifulSoup
+import json
 
 app = Flask(__name__)
 
-# 스크린샷(37)에서 확인된 유저님의 진짜 제미나이 API 키 반영
-GEMINI_API_KEY = "AQ.Ab8RN6KMb-N2TIZzWtUiCCiOLoV4HItvy7ef6uvNV0RZbh7lKg"
-# 구글 서비스 정책이나 버전에 구애받지 않도록 챗봇용 1.5-flash 모델로 주소 세팅
+# [수정 완료] 스크린샷(37)에서 확인한 진짜 유저님의 구글 제미나이 API 키
+GEMINI_API_KEY = "AQ.Ab8RN6LIotkvtab9DVZdWlkndNmKZ2QpnuwBF-D-eVHgxQg4fA"
 GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-
-def ask_gemini_ai(food_name):
-    """
-    [필수 조건 1] 생성형 인공지능(Gemini) 연동 기능
-    """
-    prompt = (
-        f"너는 다이어트 식단 분석용 챗봇에 탑재된 전문 영양사야. "
-        f"유저가 입력한 음식 [{food_name}]에 대한 1인분 기준 정확한 칼로리(kcal)와 영양소 특징을 말해줘. "
-        f"그리고 다이어터들을 위한 유용한 조언이나 대체 음식을 이모티콘을 섞어서 딱 3줄 요약으로 친절하게 답변해줘."
-    )
-    
-    payload = {
-        "contents": [{
-            "parts": [{"text": prompt}]
-        }]
-    }
-    headers = {"Content-Type": "application/json"}
-    
-    try:
-        response = requests.post(GEMINI_URL, json=payload, headers=headers, timeout=8)
-        if response.status_code == 200:
-            result = response.get_json()
-            ai_text = result['candidates'][0]['content']['parts'][0]['text']
-            return f"[🤖 생성형 AI 실시간 분석]\n\n{ai_text.strip()}"
-    except Exception as e:
-        print(f"AI 호출 실패: {e}")
-    return None
-
-def crawl_naver_calorie(food_name):
-    """
-    [필수 조건 2] 실시간 네이버 검색 결과 크롤링 기능
-    """
-    try:
-        url = f"https://search.naver.com/search.naver?query={food_name}+칼로리"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
-        }
-        response = requests.get(url, headers=headers, timeout=4)
-        
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            content_snippet = soup.find('div', class_='api_txt_lines')
-            if not content_snippet:
-                content_snippet = soup.find('p', class_='text')
-                
-            if content_snippet:
-                return f"[🔍 실시간 크롤링 결과]\n네이버 데이터 기준: {content_snippet.get_text().strip()}"
-    except Exception as e:
-        print(f"크롤링 실패: {e}")
-    return None
 
 @app.route('/api/calorie', methods=['POST'])
 def get_calorie():
-    req = request.get_json()
-    
-    # [필수 조건 3] 파라미터 활용 (카카오 오픈빌더 커스텀 엔티티 'food' 매칭)
     try:
-        food_name = req['action']['params']['food']
-    except (KeyError, TypeError):
-        food_name = None
-
-    if not food_name:
-        result_text = "⚠️ 분석할 음식명이 정상적으로 전달되지 않았습니다. '음식명 칼로리' 형태로 다시 입력해 주세요!"
-    else:
-        # 1순위: 제미나이 생성형 AI 연동 답변 시도
-        result_text = ask_gemini_ai(food_name)
+        # 1. 카카오톡이 보내준 데이터 수집
+        req = request.get_json()
         
-        # 2순위: AI 통신 실패 시 실시간 크롤링 엔진으로 전환 (상호 보완 방어막)
-        if not result_text:
-            result_text = crawl_naver_calorie(food_name)
-            
-        # 3순위: 둘 다 일시적 차단될 경우를 대비한 최종 정적 데이터 방어막
-        if not result_text:
-            result_text = f"[정적 데이터 수집 결과] [{food_name}]은(는) 일반적인 1인분 조리 기준 평균 약 350~550 kcal 범주에 속합니다."
+        # 2. 카카오톡 파라미터에서 유저가 입력한 음식 이름(food) 추출
+        food = req.get('action', {}).get('params', {}).get('food', '')
+        
+        if not food:
+            return jsonify({
+                "version": "2.0",
+                "template": {
+                    "outputs": [{"simpleText": {"text": "음식 이름을 정확히 인식하지 못했어요. 다시 시도해주세요."}}]
+                }
+            })
 
-    # 카카오 i 오픈빌더 최종 규격 출력
-    response_body = {
+        # 3. 구글 제미나이 AI에게 보낼 질문(프롬프트) 작성
+        prompt_text = (
+            f"너는 전문 영양사야. 카카오톡 유저가 입력한 음식인 '{food}'에 대한 칼로리 정보를 친절하게 분석해줘.\n"
+            f"답변은 카카오톡 창에서 읽기 편하게 반드시 아래 양식을 지켜서 딱 3줄 요약 코멘트로 보내줘.\n\n"
+            f"[🤖 생성형 AI 실시간 분석]\n"
+            f"• 음식명: {food}\n"
+            f"• 예상 칼로리: [정확한 kcall 정보 기재]\n"
+            f"• 영양사 한줄평: [이 음식을 먹을 때 건강을 위한 조언이나 팁 1문장]"
+        )
+
+        # 4. 제미나이 AI API 호출 양식 설정
+        headers = {'Content-Type': 'application/json'}
+        payload = {
+            "contents": [{
+                "parts": [{"text": prompt_text}]
+            }]
+        }
+
+        # 5. 구글 서버로 전송 및 답변 받기
+        response = requests.post(GEMINI_URL, headers=headers, json=payload)
+        res_json = response.json()
+
+        # 6. 제미na이 답변에서 텍스트만 쏙 빼내기
+        ai_response = res_json['candidates'][0]['content']['parts'][0]['text']
+
+    except Exception as e:
+        # 에러 발생 시 카톡방에 띄워줄 에러 메시지
+        ai_response = f"죄송합니다. 영양사 AI 서버 연동 중 오류가 발생했습니다.\n(사유: {str(e)})"
+
+    # 7. 카카오톡 오픈빌더가 원하는 최종 규격(JSON)으로 응답 반환
+    return jsonify({
         "version": "2.0",
         "template": {
             "outputs": [
                 {
                     "simpleText": {
-                        "text": f"🥗 스마트 식단분석 인프라 결과 ──\n\n🎯 검색 단어: {food_name}\n\n{result_text}"
+                        "text": ai_response
                     }
                 }
             ]
         }
-    }
-    
-    return jsonify(response_body)
+    })
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=5000, debug=True)
